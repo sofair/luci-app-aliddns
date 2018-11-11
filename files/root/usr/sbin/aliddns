@@ -8,13 +8,6 @@ uci_get_by_name() {
 	echo ${ret:=$3}
 }
 
-uci_bool_by_name() {
-	case "$(uci_get_by_name $1 $2)" in
-		1|on|true|yes|enabled) return 0;;
-	esac
-	return 1
-}
-
 intelnetip() {
 	tmp_ip=`curl -sL --connect-timeout 3   ns1.dnspod.net:6666`
 	if [ "Z$tmp_ip" == "Z" ]; then
@@ -40,7 +33,11 @@ resolve2ip() {
 		tmp_ip=`nslookup $domain 114.114.115.115 2>/dev/null | sed '/^Server/d; /#53$/d' | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | tail -n1`
 	fi
 	if [ "Z$tmp_ip" == "Z" ]; then
-		tmp_ip=`curl -sL --connect-timeout 3 "119.29.29.29/d?dn=$domain"`
+        if [ "$webdumptool" == "curl" ]; then
+            tmp_ip=`curl -sL --connect-timeout 3 "119.29.29.29/d?dn=$domain"`
+        else
+            tmp_ip=`webdump -R -t 3 119.29.29.29 80 GET "/d?dn=$domain"`
+        fi
 	fi
 	echo -n $tmp_ip
 }
@@ -80,12 +77,21 @@ urlencode() {
 send_request() {
 	# send_request action<string> args<string>
 	local args="AccessKeyId=$ak_id&Action=$1&Format=json&$2&Version=2015-01-09"
-	local hash=$(urlencode $(echo -n "GET&%2F&$(urlencode $args)" | openssl dgst -sha1 -hmac "$ak_sec&" -binary | openssl base64))
-	curl -sSL --connect-timeout 5 "http://alidns.aliyuncs.com/?$args&Signature=$hash"
+    local hash=
+    if [ "$signtool" == "openssl" ]; then
+        hash=$(urlencode $(echo -n "GET&%2F&$(urlencode $args)" | openssl dgst -sha1 -hmac "$ak_sec&" -binary | openssl base64))
+    else
+        hash=$(urlencode $(echo -n "GET&%2F&$(urlencode $args)" | sha1_hmac "$ak_sec&" -base64))
+    fi
+    if [ "$webdumptool" == "curl" ]; then
+        curl -sSL --connect-timeout 5 "http://alidns.aliyuncs.com/?$args&Signature=$hash"
+    else
+        webdump -R alidns.aliyuncs.com 80 GET "/?$args&Signature=$hash"
+    fi
 }
 
 get_recordid() {
-	sed 's/RR/\n/g' | sed -n 's/.*RecordId[^0-9]*\([0-9]*\).*/\1\n/p' | sort -ru | sed /^$/d
+	sed -n 's/.*RecordId[^0-9]*\([0-9]*\).*/\1/p'
 }
 
 query_recordid() {
@@ -100,19 +106,7 @@ add_record() {
 	send_request "AddDomainRecord&DomainName=$main_dm" "RR=$sub_dm&SignatureMethod=HMAC-SHA1&SignatureNonce=$timestamp&SignatureVersion=1.0&Timestamp=$timestamp&Type=A&Value=$ip"
 }
 
-del_record() {
-	send_request "DeleteDomainRecord" "RecordId=$1&SignatureMethod=HMAC-SHA1&SignatureNonce=$timestamp&SignatureVersion=1.0&Timestamp=$timestamp"
-}
-
 do_ddns_record() {
-	if uci_bool_by_name base clean ; then
-		query_recordid | get_recordid | while read rr; do
-			echo "$DATE Clean record $sub_dm.$main_dm: $rr"
-			del_record $rr >/dev/null
-			timestamp=$(date -u "+%Y-%m-%dT%H%%3A%M%%3A%SZ")
-		done
-		rrid=''
-	fi
 	if [ "Z$rrid" == "Z" ]; then
 		rrid=`query_recordid | get_recordid`
 	fi
@@ -128,7 +122,7 @@ do_ddns_record() {
 		echo "$DATE # ERROR, Please Check Config/Time"
 	else
 		# save rrid
-		uci set aliddns.base.record_id=$rrid
+		uci set aliddns.base.record_id_$sub_dm=$rrid
 		uci commit aliddns
 		echo "$DATE # UPDATED($ip)"
 	fi
@@ -141,14 +135,24 @@ clean_log() {
 	fi
 }
 
-[ -x /usr/bin/openssl -a -x /usr/bin/curl -a -x /bin/sed ] ||
-	( echo "Need [ openssl + curl + sed ]" && exit 1 )
+signtool=
+[ -x /usr/bin/openssl ] && signtool=openssl
+[ -z "$signtool" ] && [ -x /bin/sha1_hmac ] && signtool=sha1_hmac
+
+webdumptool=
+[ -x /usr/bin/curl ] && webdumptool=curl
+[ -z "$webdumptool" ] && [ -x /bin/webdump ] && webdumptool=webdump
+
+sedtool=
+[ -x /bin/sed ] && sedtool=sed
+
+[ -z "$signtool" -o -z "$webdumptool" -o -z "$sedtool" ] || ( echo "Need [ openssl|sha1_hmac + curl|webdump + sed ]" && exit 1 )
 
 ak_id=$(uci_get_by_name   base app_key)
 ak_sec=$(uci_get_by_name  base app_secret)
-rrid=$(uci_get_by_name    base record_id)
+#rrid=$(uci_get_by_name    base record_id)
 main_dm=$(uci_get_by_name base main_domain)
-sub_dm=$(uci_get_by_name  base sub_domain)
+all_sub_dm=$(uci_get_by_name  base sub_domain)
 
 iface=$(uci_get_by_name   base interface)
 if [ "Z$iface" == "Zinternet" -o "Z$iface" == "Z" ]; then
@@ -161,4 +165,8 @@ DATE=$(date +'%Y-%m-%d %H:%M:%S')
 timestamp=$(date -u "+%Y-%m-%dT%H%%3A%M%%3A%SZ")
 
 clean_log
+for sub_dm in $(echo "$all_sub_dm")
+do
+rrid=$(uci_get_by_name    base "record_id_$sub_dm")
 check_aliddns || do_ddns_record
+done

@@ -24,7 +24,7 @@ define Package/luci-app-aliddns
 	SUBMENU:=3. Applications
 	TITLE:=LuCI Support for aliddns
 	PKGARCH:=all
-	DEPENDS:=+openssl-util +curl
+	DEPENDS:=+!PACKAGE_openssl-util:sha1_hmac +!PACKAGE_curl:webdump
 endef
 
 define Package/luci-app-aliddns/description
