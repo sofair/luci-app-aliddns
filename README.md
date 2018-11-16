@@ -32,10 +32,17 @@ LEDE/OpenWrt LuCI for AliDDNS
                         └── aliddns.lua          // LuCI 基本设置
 ```
 
+主要修改
+---
+
+1. 可以使用轻量级的 `sha1_hmac` 以及 `webdump` 进行更新。
+2. 支持多个域名更新。
+
+
 依赖
 ---
 
-软件包的正常使用需要依赖 `openssl-util` 和 `curl`.  
+软件包的正常使用需要依赖 `openssl-util` 或 `sha1_hmac` 和 `curl` 或 `webdump`.  
 
 配置
 ---
